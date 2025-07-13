@@ -20,10 +20,13 @@ from vllm.utils import direct_register_custom_op
 from .vllm_inductor_pass import VllmInductorPass
 
 if find_spec("flashinfer"):
-    import flashinfer.comm as flashinfer_comm
-
-    flashinfer_comm = (flashinfer_comm if hasattr(
-        flashinfer_comm, "trtllm_allreduce_fusion") else None)
+    try:
+        import flashinfer.comm as flashinfer_comm
+        flashinfer_comm = (flashinfer_comm if hasattr(
+            flashinfer_comm, "trtllm_allreduce_fusion") else None)
+    except ImportError:
+        # flashinfer.comm doesn't exist in some versions of flashinfer
+        flashinfer_comm = None
 else:
     flashinfer_comm = None
 from vllm.platforms import current_platform
