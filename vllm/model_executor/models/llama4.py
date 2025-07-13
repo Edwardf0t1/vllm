@@ -367,7 +367,12 @@ class Llama4Model(LlamaModel):
                 if "w13" in full_param_name:
                     shard_idx = 0 if shard_id == "w1" else 1
                     new_loaded_weight = new_loaded_weight[shard_idx]
-                new_loaded_weight = new_loaded_weight.transpose(-1, -2)
+
+                # Only transpose for non-FP4 weights
+                # FP4 weights are already in the correct format and shouldn't be transposed
+                if loaded_weight.dtype != torch.uint8:
+                    new_loaded_weight = new_loaded_weight.transpose(-1, -2)
+
                 layer_idx = extract_layer_index(name)
                 # EP mapping
                 expert_map = self.layers[
@@ -564,19 +569,29 @@ class Llama4ForCausalLM(LlamaForCausalLM):
             attn_in = self.config.head_dim * n_heads
             attn_out = self.config.hidden_size
 
+            # Standard permutation for full precision weights
             return w.view(n_heads, attn_in // n_heads // 2, 2,
                           attn_out).transpose(1, 2).reshape(attn_in, attn_out)
 
         modules = name.split(".")
 
-        # rotary embeds should be sliced
-        if ("wk" in modules or "k_proj" in modules) \
-           and modules[-1] == "weight":
-            loaded_weight = permute(loaded_weight,
-                                    self.config.num_key_value_heads)
-        elif ("wq" in modules or "q_proj" in modules) \
-                and modules[-1] == "weight":
-            loaded_weight = permute(loaded_weight,
-                                    self.config.num_attention_heads)
+                # Only apply permutation to specific attention weights (q_proj and k_proj)
+        # Skip permutation for:
+        # 1. FP4 weights (already packed)
+        # 2. Non-attention weights (MoE, embeddings, etc.)
+        # 3. Non-weight parameters (scales, biases, etc.)
+        is_fp4_weight = loaded_weight.dtype == torch.uint8
+        is_attention_layer = ("self_attn" in name or "attention" in name)
+        is_weight_param = modules[-1] == "weight"
+        is_qk_proj = ("wk" in modules or "k_proj" in modules or "wq" in modules or "q_proj" in modules)
+
+        # Only apply permutation to attention q_proj and k_proj weights that are not FP4
+        if is_attention_layer and is_weight_param and is_qk_proj and not is_fp4_weight:
+            if ("wk" in modules or "k_proj" in modules):
+                loaded_weight = permute(loaded_weight,
+                                        self.config.num_key_value_heads)
+            elif ("wq" in modules or "q_proj" in modules):
+                loaded_weight = permute(loaded_weight,
+                                        self.config.num_attention_heads)
 
         return name, loaded_weight
