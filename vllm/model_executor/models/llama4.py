@@ -369,7 +369,7 @@ class Llama4Model(LlamaModel):
                     new_loaded_weight = new_loaded_weight[shard_idx]
 
                 # Only transpose for non-FP4 weights
-                # FP4 weights are already in the correct format and shouldn't be transposed
+                # FP4 weights are already in the correct format and shouldn't be transposed (double check)
                 if loaded_weight.dtype != torch.uint8:
                     new_loaded_weight = new_loaded_weight.transpose(-1, -2)
 
@@ -575,8 +575,8 @@ class Llama4ForCausalLM(LlamaForCausalLM):
 
         modules = name.split(".")
 
-                # Only apply permutation to specific attention weights (q_proj and k_proj)
-        # Skip permutation for:
+        # Only apply permutation to specific attention weights (q_proj and k_proj)
+        # Skip permutation for (double check):
         # 1. FP4 weights (already packed)
         # 2. Non-attention weights (MoE, embeddings, etc.)
         # 3. Non-weight parameters (scales, biases, etc.)
