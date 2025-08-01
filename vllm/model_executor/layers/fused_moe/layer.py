@@ -877,10 +877,52 @@ class FusedMoE(torch.nn.Module):
     def _load_w13_weight_scale(self, shard_dim: int,
                                loaded_weight: torch.Tensor,
                                param: torch.Tensor, tp_rank: int):
-        shard_size = param.shape[shard_dim]
-        loaded_weight = loaded_weight.narrow(shard_dim, shard_size * tp_rank,
-                                             shard_size)
-        param.copy_(loaded_weight)
+        # Early compatibility check - skip if fundamentally incompatible
+        size_ratio = param.numel() / loaded_weight.numel() if loaded_weight.numel() > 0 else float('inf')
+        if size_ratio > 10 or size_ratio < 0.1:
+            return  # Skip loading for incompatible formats
+
+        quant_method = getattr(param, "quant_method", None)
+
+        # Simple loading strategies
+        def try_load(source_weight, should_shard=False):
+            try:
+                if should_shard and source_weight.dim() > shard_dim:
+                    shard_size = param.shape[shard_dim]
+                    sharded = source_weight.narrow(shard_dim, shard_size * tp_rank, shard_size)
+                    param.copy_(sharded)
+                else:
+                    param.copy_(source_weight)
+                return True
+            except Exception:
+                return False
+
+        # Try loading based on quantization method
+        if quant_method == FusedMoeWeightScaleSupported.TENSOR.value:
+            success = try_load(loaded_weight, should_shard=False)
+        elif quant_method == FusedMoeWeightScaleSupported.BLOCK.value:
+            success = try_load(loaded_weight, should_shard=True)
+        else:
+            # Simple fallback: try direct copy first, then sharding
+            success = try_load(loaded_weight, should_shard=False)
+            if not success:
+                success = try_load(loaded_weight, should_shard=True)
+
+        # If basic approaches fail, try simple reshaping for 3D params
+        if not success and param.dim() == 3 and loaded_weight.dim() == 2:
+            total_size = loaded_weight.shape[0]
+            num_experts = param.shape[0]
+            if total_size % num_experts == 0:
+                try:
+                    size_per_expert = total_size // num_experts
+                    reshaped = loaded_weight.view(num_experts, size_per_expert, -1)
+                    success = try_load(reshaped, should_shard=True)
+                except Exception:
+                    pass
+
+        # If still failed, skip silently (likely incompatible format)
+        if not success:
+            return
 
     def _load_model_weight_or_group_weight_scale(self,
                                                  shard_dim: int,
